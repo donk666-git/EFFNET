@@ -1,0 +1,7 @@
+*.pth
+*.pyc
+__pycache__/
+
+# Experiment outputs (intermediate data)
+*.npy
+*.pkl

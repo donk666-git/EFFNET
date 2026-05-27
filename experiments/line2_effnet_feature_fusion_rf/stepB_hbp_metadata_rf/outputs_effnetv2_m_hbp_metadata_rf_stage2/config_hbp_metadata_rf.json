@@ -1,0 +1,16 @@
+{
+  "feature_dir": "outputs_effnetv2_m_finetuned_hbp_metadata_rf",
+  "output_dir": "outputs_effnetv2_m_hbp_metadata_rf_stage2",
+  "pca_dim": 512,
+  "batch_size": 512,
+  "n_estimators": 500,
+  "seed": 42,
+  "pca_explained_variance": 0.7243831844315543,
+  "metrics": {
+    "accuracy": 0.8792415169660679,
+    "balanced_accuracy": 0.7128780919867846,
+    "precision_macro": 0.9251806786211928,
+    "recall_macro": 0.7128780919867846,
+    "f1_macro": 0.795751356910181
+  }
+}
