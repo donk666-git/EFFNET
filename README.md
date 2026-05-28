@@ -8,6 +8,7 @@ EFFNet/
 ├── log.md                                         # 实验过程记录、debug 记录与阶段性结论
 │
 ├── src/                                           # 可复现实验脚本
+│   ├── train_SA.py                                # line1: EfficientNetV2-M + Soft Attention + Metadata 训练脚本
 │   ├── train_effnet_metadat.py                    # stepA: EfficientNetV2-M + Metadata backbone 训练脚本
 │   └── extract_hbp_rf.py                          # stepB/C: 提取 HBP/metadata 特征并训练 Random Forest
 │
@@ -36,7 +37,7 @@ EFFNet/
 │   │   └── outputs_effnetv2_m_softattention_metadata_finetune_classifier/
 │   │                                               # EfficientNetV2-M + Soft Attention + Metadata 微调结果
 │   │
-│   ├── line1_nguyen2022_soft_attention/           # line1 输出目录：Soft Attention baseline/对照实验
+│   ├── line1_nguyen2022_soft_attention/           # line1 输出目录：EfficientNetV2-M + SA + Metadata 完整训练结果
 │   │
 │   ├── line2_effnet_feature_fusion_rf/            # line2 输出目录：EfficientNet feature fusion + RF
 │   │   ├── stepA_effnetv2_m_metadata_backbone/    # EfficientNetV2-M + Metadata backbone 权重与评估结果
@@ -54,12 +55,14 @@ EFFNet/
 
 ## line 1
 - reference: Nguyen et al., 2022, Skin Lesion Classification on Imbalanced Data Using Deep Learning with Soft Attention
+- current implementation: EfficientNetV2-M + Soft Attention + Metadata
+
 ```
 preprocess.ipynb
   图像裁剪、增强质量 → 输出 {dx}/enhanced/{image_id}.jpg
       │
       ▼
-train.py
+src/train_SA.py
   │
   ├── 数据准备
   │   [1] 读取 metadata.csv
@@ -70,28 +73,36 @@ train.py
   │   [6] 90/10 分层划分 → DataLoader
   │
   ├── 模型构建
-  │   [7] InceptionResNetV2(features-only, ImageNet 预训练)
+  │   [7] EfficientNetV2-M(features-only, ImageNet 预训练)
   │       + Soft-Attention(16头, γ=0 初始化)
   │       + Metadata MLP(19→64)
   │       → 拼接 → FC(2C+64 → 512 → 7)
   │
   ├── 验证单轮
-  │   [8] forward/backward 各跑 1 epoch，确认无报错
+  │   [8] 可选 --smoke-test 做一次 forward/eval，确认 tensor shape 无误
   │
   ├── 正式训练
-  │   [9] 30 epochs
+  │   [9] 60 epochs
   │       · 每轮：train → validate → ReduceLROnPlateau（按 val F1-macro）
-  │       · F1 提升 → 保存 best_model.pth
+  │       · F1 提升 → 保存 best_effnetv2_softattention_metadata_classifier.pth
   │       · 每轮   → 保存 last_checkpoint.pth（含 optimizer/scheduler）
-  │       · patience=7 无提升 → early stopping
+  │       · patience=12 无提升 → early stopping（按 best_epoch 统计）
   │
   └── 最终输出
-      [10] 加载最优模型 → 全量评估
+      [10] 保存当前最优 epoch 的验证集评估（best epoch = 57）
             → metrics.csv / confusion_matrix.png
             → per_class_metrics.csv / predictions.csv
             → loss_curve.png / metric_curve.png
             → training_history.csv
 ```
+
+当前结果：
+- best epoch: 57 / 60
+- validation F1-macro: 0.8784
+- validation accuracy: 0.9112
+- validation balanced accuracy: 0.8957
+- validation precision macro: 0.8664
+- validation recall macro: 0.8957
 
 ## line 2
 - reference: EFFNet: A skin cancer classification model based on feature fusion and random forests
@@ -173,3 +184,14 @@ src/extract_hbp_rf.py
 ### stepA的策略
 - 用EfficientNetV2-M + Metadata的backbone做eff论文的主线
 - EfficientNetV2-M + SA + Metadata做对比实验，预期指标高于InceptionResNetV2 + SA + Metadata
+
+## Final Results Comparison
+
+| Line | Model / Stage | Best Epoch | Accuracy | Balanced Accuracy | Precision Macro | Recall Macro | F1 Macro | Val Loss | Notes |
+|:---|:---|---:|---:|---:|---:|---:|---:|---:|:---|
+| line1 | EfficientNetV2-M + SA + Metadata | 57 | **0.9112** | **0.8957** | 0.8664 | **0.8957** | 0.8784 | 0.6180 | Nguyen et al. inspired Soft Attention route |
+| line2 stepA | EfficientNetV2-M + Metadata backbone | 74 | 0.9062 | 0.8947 | 0.8719 | 0.8947 | **0.8825** | **0.5972** | EFFNet route backbone before RF |
+| line2 stepB | HBP + Metadata + Random Forest | - | 0.8792 | 0.7129 | **0.9252** | 0.7129 | 0.7958 | - | RF stage becomes more conservative |
+| baseline | InceptionResNetV2 + SA + Metadata | 18 | 0.8902 | 0.8828 | 0.8384 | 0.8828 | 0.8593 | 0.6231 | Output from `Deep learning/outputs_inceptionresnetv2_softattention_metadata_weighted` |
+
+

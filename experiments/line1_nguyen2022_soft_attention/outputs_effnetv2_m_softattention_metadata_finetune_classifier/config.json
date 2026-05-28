@@ -1,0 +1,21 @@
+{
+  "root": "/mnt/e/BIP/Proj_x/preprocess/preprocessing",
+  "metadata_path": "/mnt/e/BIP/Proj_x/preprocess/preprocessing/metadata.csv",
+  "output_dir": "/mnt/e/BIP/Proj_x/EFFNet/experiments/line1_nguyen2022_soft_attention/outputs_effnetv2_m_softattention_metadata_finetune_classifier",
+  "model_name": "tf_efficientnetv2_m",
+  "image_size": 300,
+  "batch_size": 8,
+  "num_workers": 0,
+  "epochs": 60,
+  "patience": 15,
+  "min_delta": 0.0001,
+  "lr": 0.0001,
+  "weight_decay": 0.0001,
+  "scheduler_patience": 7,
+  "val_size": 0.1,
+  "seed": 42,
+  "num_heads": 16,
+  "no_pretrained": false,
+  "resume": null,
+  "smoke_test": true
+}
