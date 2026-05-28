@@ -1,5 +1,106 @@
 # EfficientNetV2 Pipeline — HAM10000 Skin Lesion Classification
 
+## 最优模型pipeline
+
+最优模型来自对line1与line2 stepA，做**TTA + Ensemble** 的方案。
+
+- line1: `EfficientNetV2-M + Soft Attention + Metadata`
+- line2 stepA: `EfficientNetV2-M + Metadata`
+
+指标结果：
+- Accuracy: **0.9261**
+- Balanced Accuracy: **0.9143**
+- F1-macro: **0.9016**
+
+```text
+preprocess.ipynb
+      │
+      ▼
+metadata.csv
+  │
+  ├── 读取csv表头字段
+  ├── 构建图像路径
+  ├── 标签编码为 7 类：
+  │   akiec / bcc / bkl / df / mel / nv / vasc
+  └── metadata 预处理：
+      age 缺失值填训练集 median
+      age 使用 StandardScaler 标准化
+      sex / localization 使用 OneHotEncoder 编码
+      最终得到 19 维 metadata feature
+
+      │
+      ├──────────────────────────────────────────────┐
+      │                                              │
+      ▼                                              ▼
+line1: EfficientNetV2-M + Soft Attention + Metadata  line2 stepA: EfficientNetV2-M + Metadata
+  │                                                    │
+  ├── EfficientNetV2-M features-only backbone           ├── EfficientNetV2-M backbone
+  ├── Soft Attention 模块                               ├── Image feature: global average pooling
+  ├── Image feature pooling                             ├── Metadata MLP: 19 → 128 → 64
+  ├── Metadata MLP: 19 → 128 → 64                       └── Classifier: image feature + metadata → 7 classes
+  └── Classifier: image feature + attention feature
+      + metadata → 7 classes
+
+      │                                              │
+      │                                              │
+      ▼                                              ▼
+best_effnetv2_softattention_metadata_classifier.pth  best_effnetv2_metadata_classifier.pth
+  best epoch = 57                                      best epoch = 74
+  F1-macro = 0.8784                                    F1-macro = 0.8825
+
+      │                                              │
+      └──────────────────────┬───────────────────────┘
+                             ▼
+TTA prediction
+  对每张验证图像做 4 种测试时增强：
+  orig / hflip / vflip / hvflip
+
+  每个模型分别输出 4 组概率：
+  prob_orig, prob_hflip, prob_vflip, prob_hvflip
+
+  对同一模型的 4 组概率取平均：
+  prob_line1_tta = mean(prob_line1_4tta)
+  prob_line2_tta = mean(prob_line2_4tta)
+
+                             │
+                             ▼
+Probability Ensemble
+  在验证集上搜索融合权重 alpha：
+
+  final_prob = alpha * prob_line1_tta
+             + (1 - alpha) * prob_line2_tta
+
+  最佳权重：
+  alpha = 0.50
+
+  即：
+  final_prob = 0.5 * prob_line1_tta
+             + 0.5 * prob_line2_tta
+
+                             │
+                             ▼
+Final prediction
+  pred_label = argmax(final_prob)
+
+                             │
+                             ▼
+Final outputs
+  experiments/ensemble_line1_line2_stepA/
+  ├── tta_ensemble_alpha_0.50_metrics.csv
+  ├── tta_ensemble_alpha_0.50_predictions.csv
+  ├── tta_ensemble_alpha_0.50_per_class_metrics.csv
+  ├── tta_ensemble_alpha_0.50_confusion_matrix.csv
+  └── tta_ensemble_search_results.json
+```
+
+选择该方案的原因：
+- 两个单模型都已经取得较高性能，但结构不同，错误模式存在互补。
+  - line1 引入 Soft Attention，更关注病灶区域的空间特征。
+  - line2 stepA 去掉 Soft Attention，但保留 EfficientNetV2-M + metadata 的强 backbone 表达。
+  - TTA 可以降低单次图像方向变化带来的预测波动。
+- 集成学习可以综合两个模型的置信度，比单独取某一个模型更稳定，提升泛化能力与推理性能。
+
+
 ## Project Structure
 
 ```text
@@ -16,6 +117,9 @@ EFFNet/
 │   ├── line1_SA/                                  # line1: 参考 Nguyen et al., 2022 的 Soft Attention 路线
 │   │   └── minimum_set_with_finetune_metadata_soft-attention.ipynb
 │   │                                               # EfficientNetV2-M + Soft Attention + Metadata 探索
+│   │
+│   ├── ensemble/                                  # line1 与 line2 stepA 的概率融合和 TTA 实验
+│   │   └── ensemble+TTA.ipynb
 │   │
 │   ├── line2_effnet_rf/                           # line2: 参考 EFFNet 的 feature fusion + RF 路线
 │   │   ├── minimum_set.ipynb                      # HBP + RF 最小流程验证
@@ -38,6 +142,8 @@ EFFNet/
 │   │                                               # EfficientNetV2-M + Soft Attention + Metadata 微调结果
 │   │
 │   ├── line1_nguyen2022_soft_attention/           # line1 输出目录：EfficientNetV2-M + SA + Metadata 完整训练结果
+│   │
+│   ├── ensemble_line1_line2_stepA/                # line1 与 line2 stepA 的概率融合 / TTA 融合结果
 │   │
 │   ├── line2_effnet_feature_fusion_rf/            # line2 输出目录：EfficientNet feature fusion + RF
 │   │   ├── stepA_effnetv2_m_metadata_backbone/    # EfficientNetV2-M + Metadata backbone 权重与评估结果
@@ -162,13 +268,8 @@ src/extract_hbp_rf.py
   └── 输出 metrics / per-class metrics / predictions / confusion matrix
 ```
 
-当前观察：
-- EfficientNetV2-M + Metadata 的 stepA backbone 指标高于 line1 的早期对比结果。
-- 加入 HBP + Metadata + RF 后，预测分布变得更保守，stage-2 RF 暂未带来进一步提升。
-- 可能原因包括：当前 HBP/RF 并非 EFFNet 原论文的完全复现、类别均衡增强策略未完全对齐、RF 对高维融合特征更倾向稳定多数类预测，以及 stepA 中 metadata 已经提供了主要增益。
-
-## stepA
-### backbone Training Results Comparison (Best of First 5 Epochs)
+### stepA
+#### backbone Training Results Comparison (Best of First 5 Epochs)
 
 对比当前三个变体在 **前 5 个 epoch 中的最佳验证集表现**：
 
@@ -181,17 +282,55 @@ src/extract_hbp_rf.py
 | **F1 (Macro)** | **0.7574** (E5) | 0.7520 (E4) | 0.7461 (E5) |
 | **Val Loss** | 0.5491 (E5) | **0.5234** (E5) | 0.5671 (E5) |
 
-### stepA的策略
+#### stepA的策略
 - 用EfficientNetV2-M + Metadata的backbone做eff论文的主线
 - EfficientNetV2-M + SA + Metadata做对比实验，预期指标高于InceptionResNetV2 + SA + Metadata
 
+## Ensemble + TTA
+
+在完成 line1 和 line2 stepA 后，进一步尝试对两个强模型做集成学习：
+
+```text
+line1: EfficientNetV2-M + Soft Attention + Metadata
+line2 stepA: EfficientNetV2-M + Metadata backbone
+
+final_prob = alpha * prob_line1 + (1 - alpha) * prob_line2_stepA
+```
+
+实验分为两步：
+- **普通概率融合**：直接读取两个模型在验证集上的 `predictions.csv`，搜索融合权重 `alpha`。
+- **TTA + 概率融合**：先对每张验证图像做 `orig / hflip / vflip / hvflip` 四种测试时增强，分别平均两个模型的预测概率，再做模型间概率融合。
+
+结果：
+- 普通概率融合的最佳权重为 `alpha=0.70`，即 70% line1 + 30% line2 stepA，F1-macro 提升到 **0.8889**。
+- TTA 后最佳权重为 `alpha=0.50`，即 line1 和 line2 stepA 等权融合，F1-macro 进一步提升到 **0.9016**。
+- TTA + Ensemble 是当前所有实验中表现最好的方案。
+
+
+
 ## Final Results Comparison
 
-| Line | Model / Stage | Best Epoch | Accuracy | Balanced Accuracy | Precision Macro | Recall Macro | F1 Macro | Val Loss | Notes |
+| 实验线 | 模型 / 阶段 | Best Epoch | Accuracy | Balanced Accuracy | Precision Macro | Recall Macro | F1 Macro | Val Loss | 说明 |
 |:---|:---|---:|---:|---:|---:|---:|---:|---:|:---|
-| line1 | EfficientNetV2-M + SA + Metadata | 57 | **0.9112** | **0.8957** | 0.8664 | **0.8957** | 0.8784 | 0.6180 | Nguyen et al. inspired Soft Attention route |
-| line2 stepA | EfficientNetV2-M + Metadata backbone | 74 | 0.9062 | 0.8947 | 0.8719 | 0.8947 | **0.8825** | **0.5972** | EFFNet route backbone before RF |
-| line2 stepB | HBP + Metadata + Random Forest | - | 0.8792 | 0.7129 | **0.9252** | 0.7129 | 0.7958 | - | RF stage becomes more conservative |
-| baseline | InceptionResNetV2 + SA + Metadata | 18 | 0.8902 | 0.8828 | 0.8384 | 0.8828 | 0.8593 | 0.6231 | Output from `Deep learning/outputs_inceptionresnetv2_softattention_metadata_weighted` |
+| Ensemble + TTA | EfficientNetV2-M + SA + Metadata 与 EfficientNetV2-M + Metadata 等权融合 | - | **0.9261** | **0.9143** | 0.8938 | **0.9143** | **0.9016** | - | 当前最佳结果；TTA modes: orig / hflip / vflip / hvflip |
+| Ensemble | 70% line1 + 30% line2 stepA 概率融合 | - | 0.9182 | 0.9045 | 0.8780 | 0.9045 | 0.8889 | - | 不重新训练，只融合两个模型的验证集概率 |
+| line2 stepA | EfficientNetV2-M + Metadata backbone | 74 | 0.9062 | 0.8947 | 0.8719 | 0.8947 | 0.8825 | **0.5972** | EFFNet 路线的 backbone，单模型 F1-macro 最好 |
+| line2 stepB | HBP + Metadata + Random Forest | - | 0.8792 | 0.7129 | **0.9252** | 0.7129 | 0.7958 | - | RF 阶段 precision 高，但 recall 明显下降，预测更保守 |
+| line1 | EfficientNetV2-M + SA + Metadata | 57 | 0.9112 | 0.8957 | 0.8664 | 0.8957 | 0.8784 | 0.6180 | 参考 Nguyen et al. 的 Soft Attention 路线 |
+| baseline | InceptionResNetV2 + SA + Metadata | 18 | 0.8902 | 0.8828 | 0.8384 | 0.8828 | 0.8593 | 0.6231 | 来自 `Deep learning/outputs_inceptionresnetv2_softattention_metadata_weighted` |
 
+
+### 结果分析
+- line2的解释：
+  - EfficientNetV2-M + Metadata 的 stepA backbone 指标高于 line1 的早期对比结果。
+  - 加入 HBP + Metadata + RF 后，预测分布变得更保守，即precision 很高，但 recall 明显低，说明 RF 预测得很“收缩”，比如 
+    - per-class 里：
+      - mel recall = 0.5676
+      - df recall  = 0.5833
+      - bcc recall = 0.6275
+    - stage-2 RF 暂未带来进一步提升。可能原因包括：当前 HBP/RF 并非 EFFNet 原论文的完全复现、类别均衡增强策略未完全对齐（导致少数类别的性能下降）、RF 对高维融合特征更倾向稳定多数类预测，以及 stepA 中 metadata 已经提供了主要增益。
+- line2 stepB 的 Random Forest 虽然 precision macro 最高，但 recall macro 下降明显，因此更适合作为 feature-fusion/RF 路线的分析结果，而不是最终最佳模型。
+  - RF 只能在固定特征层面过采样，在特征维度高，样本数量不均衡时学习到了保守的边界策略。
+- **最终最佳方案是 TTA + Ensemble**：Accuracy = **0.9261**，Balanced Accuracy = **0.9143**，F1-macro = **0.9016**。
+- 与最佳单模型 line2 stepA 相比，TTA + Ensemble 的 F1-macro 从 **0.8825** 提升到 **0.9016**，说明 line1 和 line2 stepA 的错误模式存在互补。
 
